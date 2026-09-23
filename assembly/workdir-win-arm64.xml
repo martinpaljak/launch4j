@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0 https://maven.apache.org/xsd/assembly-2.2.0.xsd">
+    <id>workdir-win-arm64</id>
+    <formats>
+        <format>jar</format>
+    </formats>
+    <includeBaseDirectory>false</includeBaseDirectory>
+    <fileSets>
+        <fileSet>
+            <directory>bin-win-arm64</directory>
+            <outputDirectory>${project.build.finalName}-workdir-win-arm64/bin</outputDirectory>
+        </fileSet>
+        <fileSet>
+            <outputDirectory>${project.build.finalName}-workdir-win-arm64</outputDirectory>
+            <includes>
+                <include>w32api/**/*</include>
+                <include>w32api_jni/**/*</include>
+                <include>head/**/*</include>
+                <include>head_jni_BETA/**/*</include>
+            </includes>
+        </fileSet>
+    </fileSets>
+</assembly>

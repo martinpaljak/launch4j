@@ -1,0 +1,262 @@
+name: Build robot
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - master
+      - next
+      - wip
+
+concurrency:
+  group: robot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  binutils:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            os: ubuntu-24.04
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+          - platform: mac-arm64
+            os: macos-15
+          - platform: mac-x64
+            os: macos-15-intel
+          - platform: win-x64
+            os: ubuntu-24.04
+            host: x86_64-w64-mingw32
+          - platform: win-arm64
+            os: ubuntu-24.04
+            host: aarch64-w64-mingw32
+            llvm-mingw: 20260922
+    runs-on: ${{ matrix.os }}
+    name: binutils ${{ matrix.platform }}
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      HOST: ${{ matrix.host }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Cache
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: bin-${{ matrix.platform }}
+          key: binutils-${{ matrix.platform }}-${{ matrix.llvm-mingw }}-${{ hashFiles('binutils/build.sh') }}
+      - name: Install mingw-w64
+        if: matrix.platform == 'win-x64' && steps.cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+      - name: Install llvm-mingw
+        if: matrix.platform == 'win-arm64' && steps.cache.outputs.cache-hit != 'true'
+        env:
+          V: ${{ matrix.llvm-mingw }}
+          LLVM_MINGW: llvm-mingw-${{ matrix.llvm-mingw }}-ucrt-ubuntu-22.04-x86_64
+          SHA256: bb7bb7654b33d5aa8712acb837c963b2e0c56352560c76105270a3268c665c21
+        run: |
+          curl -fsSLO "https://github.com/mstorsjo/llvm-mingw/releases/download/$V/$LLVM_MINGW.tar.xz"
+          echo "$SHA256  $LLVM_MINGW.tar.xz" | sha256sum -c -
+          tar xf "$LLVM_MINGW.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$LLVM_MINGW/bin" >> "$GITHUB_PATH"
+      - name: Build twice
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          binutils/build.sh "$PLATFORM" ${HOST:+"--host=$HOST"}
+          mkdir again
+          (cd again && ../binutils/build.sh "$PLATFORM" ${HOST:+"--host=$HOST"})
+          for f in bin-"$PLATFORM"/*; do cmp "$f" again/"$f"; done
+          rm -rf again
+      - name: Check
+        run: |
+          file bin-"$PLATFORM"/*
+          if [ -z "$HOST" ]; then
+            bin-"$PLATFORM"/ld --version
+            bin-"$PLATFORM"/windres --version
+          fi
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: bin-${{ matrix.platform }}
+          path: bin-${{ matrix.platform }}
+          if-no-files-found: error
+
+  demo:
+    runs-on: ubuntu-24.04
+    name: demo jars
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          java-version: 25
+          distribution: zulu
+      - name: Build
+        run: |
+          ant -f demo/ConsoleApp/build.xml jar
+          ant -f demo/SimpleApp/build.xml jar
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: demo
+          path: demo/*/*.jar
+          if-no-files-found: error
+
+  smoke:
+    needs: [ binutils, demo ]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            os: ubuntu-24.04
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+          - platform: mac-arm64
+            os: macos-15
+          - platform: mac-x64
+            os: macos-15-intel
+          - platform: win-x64
+            os: windows-2025
+          - platform: win-arm64
+            os: windows-11-arm
+    runs-on: ${{ matrix.os }}
+    name: smoke ${{ matrix.platform }}
+    env:
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          java-version: 25
+          distribution: zulu
+          cache: maven
+      - name: Download binutils
+        uses: actions/download-artifact@v8
+        with:
+          name: bin-${{ matrix.platform }}
+          path: bin-${{ matrix.platform }}
+      - name: Download demo jars
+        uses: actions/download-artifact@v8
+        with:
+          name: demo
+          path: demo
+      - name: Build
+        run: |
+          ./mvnw -B -q package dependency:copy-dependencies -DoutputDirectory=target/lib
+          (cd target && jar xf ./*-workdir-"$PLATFORM".jar)
+          W=$(ls -d target/*-workdir-"$PLATFORM")
+          F=${W%-workdir-"$PLATFORM"}
+          cp "$F".jar "$W"
+          cp -r target/lib "$W"
+          chmod +x "$W"/bin/*
+          binutils/smoke.sh "$W/${F##*/}.jar" exe-"$PLATFORM"
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: exe-${{ matrix.platform }}
+          path: exe-${{ matrix.platform }}/*.exe
+          if-no-files-found: error
+
+  compare:
+    needs: smoke
+    runs-on: ubuntu-24.04
+    name: compare
+    steps:
+      - name: Download
+        uses: actions/download-artifact@v8
+        with:
+          pattern: exe-*
+      - name: Compare
+        run: |
+          sha256sum exe-*/*.exe | sort -t/ -k2
+          for f in exe-linux-x64/*.exe; do
+            for d in exe-*; do cmp "$f" "$d/${f##*/}"; done
+          done
+
+  run:
+    needs: compare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: win-x64
+            os: windows-2025
+          - platform: win-arm64
+            os: windows-11-arm
+    runs-on: ${{ matrix.os }}
+    name: run ${{ matrix.platform }}
+    steps:
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          java-version: 25
+          distribution: zulu
+      - name: Download
+        uses: actions/download-artifact@v8
+        with:
+          name: exe-${{ matrix.platform }}
+      - name: Run
+        run: |
+          cp -r "$JAVA_HOME" jre
+          check() {
+            out=$(printf 'hello\nquit\n' | ./"$1" --l4j-debug a b) && rc=0 || rc=$?
+            printf '%s\n' "$out"
+            cat launch4j.log
+            test "$rc" = 123
+            printf '%s\n' "$out" | grep -qxF "Java home: $2"
+            printf '%s\n' "$out" | grep -qxF 'Args: a b '
+            printf '%s\n' "$out" | grep -qF 'You wrote: hello'
+          }
+          check console.exe "$JAVA_HOME"
+          check console-jre.exe "$(cygpath -w "$PWD/jre")"
+          MSYS_NO_PATHCONV=1 reg add 'HKLM\SOFTWARE\JavaSoft\JDK\25' /v JavaHome /d "$JAVA_HOME" /f
+          check console-reg.exe "$JAVA_HOME"
+
+  build:
+    needs: run
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        java: [ 17, 21, 25 ]
+    name: Java ${{ matrix.java }} build
+    env:
+      PUBLISH: ${{ matrix.java == '17' && ( github.ref == 'refs/heads/master' || github.ref == 'refs/heads/next' || startsWith(github.ref, 'refs/tags/v') ) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          java-version: ${{ matrix.java }}
+          distribution: zulu
+          cache: maven
+      - name: Download binutils
+        uses: actions/download-artifact@v8
+        with:
+          pattern: bin-*
+      - name: Make binutils executable
+        run: chmod +x bin-linux-*/* bin-mac-*/*
+      - name: Set up publishing
+        if: env.PUBLISH == 'true'
+        uses: martinpaljak/maven-ssh-deploy@v2
+        with:
+          host: mvn.javacard.pro
+          key: ${{ secrets.SSH_KEY }}
+          fingerprint: SHA256:auiF3nHWvDmvq2stDl+QEECCqMcDp+FY1/bDRnvxpRw
+      - name: Build and deploy
+        run: ./mvnw -B -U deploy -Dmaven.deploy.skip=${{ env.PUBLISH != 'true' }}
