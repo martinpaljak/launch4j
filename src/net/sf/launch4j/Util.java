@@ -46,6 +46,8 @@ import java.io.Reader;
 import java.io.Writer;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.Collections;
+import java.util.Map;
 import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -118,6 +120,10 @@ public class Util {
 	}
 
 	public static void exec(String[] cmd, Log log) throws ExecException {
+		exec(cmd, log, Collections.<String, String>emptyMap());
+	}
+
+	public static void exec(String[] cmd, Log log, Map<String, String> env) throws ExecException {
 		BufferedReader is = null;
 		try {
 			if (WINDOWS_OS) {
@@ -125,7 +131,9 @@ public class Util {
 					cmd[i] = cmd[i].replaceAll("/", "\\\\");
 				}
 			}
-			Process p = Runtime.getRuntime().exec(cmd);
+			ProcessBuilder pb = new ProcessBuilder(cmd);
+			pb.environment().putAll(env);
+			Process p = pb.start();
 			is = new BufferedReader(new InputStreamReader(p.getErrorStream()));
 			String line;
 			int errLine = -1;

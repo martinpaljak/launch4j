@@ -41,7 +41,9 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.StringTokenizer;
 
 import net.sf.launch4j.binding.InvariantViolationException;
@@ -54,6 +56,7 @@ import net.sf.launch4j.config.ConfigPersister;
 public class Builder {
 	private final Log _log;
 	private final File _basedir;
+	private Long _sourceDateEpoch;
 
 	public Builder(Log log) {
 		_log = log;
@@ -63,6 +66,11 @@ public class Builder {
 	public Builder(Log log, File basedir) {
 		_log = log;
 		_basedir = basedir;
+	}
+
+	/** Sets SOURCE_DATE_EPOCH for the linker and resource compiler processes. */
+	public void setSourceDateEpoch(long epochSeconds) {
+		_sourceDateEpoch = epochSeconds;
 	}
 
 	/**
@@ -81,6 +89,9 @@ public class Builder {
 		FileInputStream is = null;
 		FileOutputStream os = null;
 		final RcBuilder rcb = new RcBuilder();
+		final Map<String, String> env = _sourceDateEpoch == null
+				? Collections.<String, String>emptyMap()
+				: Collections.singletonMap("SOURCE_DATE_EPOCH", _sourceDateEpoch.toString());
 		try {
 			if (c.isJniApplication()) {
 				_log.append("WARNING: Some features are not implemented in JNI headers, see documentation.");
@@ -97,7 +108,7 @@ public class Builder {
 					.addAbsFile(rc)
 					.addAbsFile(ro);
 			_log.append(Messages.getString("Builder.compiling.resources"));
-			resCmd.exec(_log);
+			resCmd.exec(_log, env);
 
 			Cmd ldCmd = new Cmd(_basedir);
 			ldCmd.addExe("ld")
@@ -114,7 +125,7 @@ public class Builder {
 					.add("-o")
 					.addAbsFile(outfile);
 			_log.append(Messages.getString("Builder.linking"));
-			ldCmd.exec(_log);
+			ldCmd.exec(_log, env);
 
 			if (!c.isDontWrapJar()) {
 				_log.append(Messages.getString("Builder.wrapping"));
@@ -210,8 +221,8 @@ class Cmd {
 		return this;
 	}
 
-	public void exec(Log log) throws ExecException {
+	public void exec(Log log, Map<String, String> env) throws ExecException {
 		String[] cmd = (String[]) _cmd.toArray(new String[_cmd.size()]);
-		Util.exec(cmd, log);
+		Util.exec(cmd, log, env);
 	}
 }
